@@ -1,0 +1,43 @@
+name: SourceForge Issue Downloader
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  download:
+    if: ${{ github.event.issue.title == 'sourceforge' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Extract URL from issue body
+        id: extract
+        run: |
+          body='${{ github.event.issue.body }}'
+
+          url=$(echo "$body" | grep -oE 'https?://[^ ]+' | head -n 1)
+
+          if [ -z "$url" ]; then
+            echo "No URL found"
+            exit 1
+          fi
+
+          echo "url=$url" >> $GITHUB_OUTPUT
+
+      - name: Download file
+        run: |
+          wget -O release_file "${{ steps.extract.outputs.url }}"
+
+      - name: Upload GitHub Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sourceforge-file
+          path: release_file
+
+      - name: Install rclone
+        run: |
+          curl https://rclone.org/install.sh | sudo bash
+
+      - name: Upload Google Drive
+        run: |
+          rclone copy release_file gdrive:GitHub-Uploads/ --progress
