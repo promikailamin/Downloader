@@ -25,6 +25,7 @@ jobs:
                   import re
 
                   body = os.environ.get("ISSUE_BODY", "")
+
                   match = re.search(
                       r'https?://[^\s<>"`]+',
                       body
@@ -46,29 +47,26 @@ jobs:
                   DOWNLOAD_URL: ${{ steps.extract.outputs.url }}
               run: |
                   wget \
-                    --continue \
+                    -O release_file \
                     --tries=20 \
-                    --retry-connrefused \
                     --waitretry=10 \
+                    --retry-connrefused \
                     --timeout=60 \
                     --read-timeout=60 \
-                    --dns-timeout=30 \
                     --max-redirect=20 \
-                    --user-agent="Mozilla/5.0" \
                     --progress=dot:giga \
-                    --output-document=release_file \
                     "$DOWNLOAD_URL"
 
-            - name: Verify downloaded file
+            - name: Verify download
               run: |
                   if [ ! -s release_file ]; then
                       echo "Download failed or empty file"
                       exit 1
                   fi
 
-                  echo "Download completed successfully"
+                  echo "Download completed!"
                   ls -lh release_file
-                  stat -c "File size: %s bytes" release_file
+                  sha256sum release_file
 
             - name: Upload GitHub Artifact
               uses: actions/upload-artifact@v4
