@@ -1,34 +1,78 @@
+
 name: SourceForge Issue Downloader
 
 on:
-  issues:
-    types: [opened]
+    issues:
+        types: [opened]
 
 jobs:
-  download:
-    runs-on: ubuntu-latest
+    download:
+        runs-on: ubuntu-latest
+        timeout-minutes: 360
 
-    steps:
-      - name: Extract URL from issue body
-        id: extract
-        run: |
-          body='${{ github.event.issue.body }}'
+        steps:
+            - name: Extract URL from issue body
+              id: extract
+              env:
+                  ISSUE_BODY: ${{ github.event.issue.body }}
+              run: |
+                  python3 - <<'PY'
+                  import os
+                  import re
 
-          url=$(echo "$body" | grep -oE 'https?://[^ ]+' | head -n 1)
+                  body = os.environ.get("ISSUE_BODY", "")
+                  match = re.search(r'https?://[^\s<>"`]+', body)
 
-          if [ -z "$url" ]; then
-            echo "No URL found"
-            exit 1
-          fi
+                  if not match:
+                      raise SystemExit("No URL found")
 
-          echo "url=$url" >> $GITHUB_OUTPUT
+                  url = match.group(0).rstrip(".,;:!?)")
+                  with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                      f.write(f"url={url}\n")
 
-      - name: Download file
-        run: |
-          wget -O release_file "${{ steps.extract.outputs.url }}"
+                  print("URL extracted successfully")
+                  PY
 
-      - name: Upload GitHub Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sourceforge-file
-          path: release_file
+            - name: Install aria2
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y aria2
+
+            - name: Download file
+              env:
+                  DOWNLOAD_URL: ${{ steps.extract.outputs.url }}
+              run: |
+                  aria2c \
+                    --dir="." \
+                    --out="release_file" \
+                    --continue=true \
+                    --max-connection-per-server=16 \
+                    --split=16 \
+                    --min-split-size=10M \
+                    --retry-wait=5 \
+                    --max-tries=0 \
+                    --connect-timeout=30 \
+                    --timeout=60 \
+                    --file-allocation=none \
+                    --allow-overwrite=true \
+                    --auto-file-renaming=false \
+                    --summary-interval=15 \
+                    "$DOWNLOAD_URL"
+
+            - name: Verify downloaded file
+              run: |
+                  if [ ! -s release_file ]; then
+                      echo "Download failed or empty file"
+                      exit 1
+                  fi
+
+                  ls -lh release_file
+
+            - name: Upload GitHub Artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: sourceforge-file
+                  path: release_file
+                  compression-level: 0
+                  if-no-files-found: error
+                  retention-days: 3
