@@ -40,40 +40,114 @@ jobs:
                       f.write(f"url={url}\n")
 
                   print("URL extracted successfully")
+                  print(url)
                   PY
 
-            - name: Install GNU Wget
+            - name: Install Download Tools
               shell: bash
               run: |
-                  if ! command -v wget >/dev/null 2>&1; then
-                      brew install wget
-                  fi
+                  brew install wget aria2
 
-                  echo "Wget location:"
-                  which wget
-
-                  echo "Wget version:"
+                  echo "Wget:"
                   wget --version | head -n 2
 
-            - name: Check runner network
-              shell: bash
-              run: |
-                  echo "Runner information:"
-                  sw_vers
+                  echo "Aria2:"
+                  aria2c --version | head -n 2
 
-                  echo "Network test:"
-                  curl -L -s -o /dev/null \
-                    -w "HTTP: %{http_code}\nSpeed: %{speed_download} bytes/sec\n" \
-                    https://downloads.sourceforge.net/
-
-            - name: Download SourceForge file
+            - name: Resolve Direct SourceForge Mirror
+              id: resolve
               shell: bash
               env:
                   DOWNLOAD_URL: ${{ steps.extract.outputs.url }}
               run: |
-                  echo "Starting SourceForge download..."
-                  echo "Runner: macOS"
-                  echo "Downloader: GNU Wget"
+                  python3 - <<'PY'
+                  import os
+                  import re
+                  import subprocess
+                  import sys
+
+                  url = os.environ["DOWNLOAD_URL"]
+
+                  print("Resolving SourceForge redirect chain...")
+
+                  proc = subprocess.run(
+                      [
+                          "wget",
+                          "--spider",
+                          "--server-response",
+                          "--max-redirect=10",
+                          url
+                      ],
+                      capture_output=True,
+                      text=True
+                  )
+
+                  output = proc.stderr + "\n" + proc.stdout
+
+                  urls = re.findall(
+                      r'Location:\s*(https?://[^\s]+)',
+                      output,
+                      re.IGNORECASE
+                  )
+
+                  if urls:
+                      direct_url = urls[-1].strip()
+                      direct_url = direct_url.rstrip(".")
+
+                      print("Resolved direct URL:")
+                      print(direct_url)
+
+                      with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                          f.write(f"direct_url={direct_url}\n")
+
+                  else:
+                      print("Could not resolve direct mirror.")
+                      print("Wget output:")
+                      print(output[-5000:])
+
+                      sys.exit(1)
+                  PY
+
+            - name: Download With Aria2
+              id: aria2
+              continue-on-error: true
+              shell: bash
+              env:
+                  DIRECT_URL: ${{ steps.resolve.outputs.direct_url }}
+                  DOWNLOAD_URL: ${{ steps.extract.outputs.url }}
+              run: |
+                  echo "Starting multi-connection download..."
+                  echo "Connections: 16"
+
+                  aria2c \
+                    --continue=true \
+                    --allow-overwrite=true \
+                    --auto-file-renaming=false \
+                    --max-connection-per-server=16 \
+                    --split=16 \
+                    --min-split-size=1M \
+                    --piece-length=1M \
+                    --max-tries=20 \
+                    --retry-wait=10 \
+                    --connect-timeout=30 \
+                    --timeout=60 \
+                    --summary-interval=5 \
+                    --console-log-level=notice \
+                    --header="Referer: ${DOWNLOAD_URL}" \
+                    --dir=. \
+                    --out=release_file \
+                    "$DIRECT_URL"
+
+            - name: Fallback To GNU Wget
+              if: steps.aria2.outcome == 'failure'
+              shell: bash
+              env:
+                  DOWNLOAD_URL: ${{ steps.extract.outputs.url }}
+              run: |
+                  echo "Aria2 failed."
+                  echo "Falling back to GNU Wget..."
+
+                  rm -f release_file release_file.aria2
 
                   wget \
                     --continue \
@@ -87,7 +161,7 @@ jobs:
                     --progress=bar:force:noscroll \
                     "$DOWNLOAD_URL"
 
-            - name: Verify downloaded file
+            - name: Verify Downloaded File
               shell: bash
               run: |
                   if [ ! -s release_file ]; then
@@ -113,3 +187,4 @@ jobs:
                   compression-level: 0
                   if-no-files-found: error
                   retention-days: 3
+                  
