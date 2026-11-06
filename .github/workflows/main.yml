@@ -40,32 +40,43 @@ jobs:
                       f.write(f"url={url}\n")
 
                   print("URL extracted successfully")
+                  print(url)
                   PY
 
             - name: Download SourceForge file
               env:
                   DOWNLOAD_URL: ${{ steps.extract.outputs.url }}
               run: |
+                  echo "Starting SourceForge download..."
+
                   wget \
-                    -O release_file \
+                    --output-document=release_file \
                     --tries=20 \
                     --waitretry=10 \
                     --retry-connrefused \
                     --timeout=60 \
                     --read-timeout=60 \
                     --max-redirect=20 \
-                    --progress=dot:giga \
+                    --progress=bar:force:noscroll \
+                    --show-progress \
                     "$DOWNLOAD_URL"
 
-            - name: Verify download
+            - name: Verify downloaded file
               run: |
                   if [ ! -s release_file ]; then
-                      echo "Download failed or empty file"
+                      echo "ERROR: Download failed or empty file"
                       exit 1
                   fi
 
-                  echo "Download completed!"
+                  echo "Download completed successfully!"
+
+                  echo "File information:"
                   ls -lh release_file
+
+                  echo "Exact file size:"
+                  stat -c "%s bytes" release_file
+
+                  echo "SHA256 checksum:"
                   sha256sum release_file
 
             - name: Upload GitHub Artifact
