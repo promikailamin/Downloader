@@ -11,73 +11,238 @@ permissions:
 
 jobs:
     download:
-        runs-on: ubuntu-latest
+        runs-on: windows-latest
         timeout-minutes: 360
 
         steps:
             - name: Extract URL from issue body
               id: extract
+              shell: pwsh
               env:
                   ISSUE_BODY: ${{ github.event.issue.body }}
               run: |
-                  python3 - <<'PY'
-                  import os
-                  import re
+                  $body = $env:ISSUE_BODY
 
-                  body = os.environ.get("ISSUE_BODY", "")
-
-                  match = re.search(
-                      r'https?://[^\s<>"`]+',
-                      body
+                  $match = [regex]::Match(
+                      $body,
+                      'https?://[^\s<>"`]+'
                   )
 
-                  if not match:
-                      raise SystemExit("No URL found")
+                  if (-not $match.Success) {
+                      throw "No URL found"
+                  }
 
-                  url = match.group(0).rstrip(".,;:!?)")
+                  $url = $match.Value.TrimEnd(
+                      '.', ',', ';', ':', '!', ')', '?'
+                  )
 
-                  with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-                      f.write(f"url={url}\n")
+                  "url=$url" >> $env:GITHUB_OUTPUT
 
-                  print("URL extracted successfully")
-                  print(url)
-                  PY
+                  Write-Host "URL extracted:"
+                  Write-Host $url
 
-            - name: Download SourceForge file
+            - name: Download using WinINet
+              shell: pwsh
               env:
                   DOWNLOAD_URL: ${{ steps.extract.outputs.url }}
               run: |
-                  echo "Starting SourceForge download..."
+                  Add-Type -TypeDefinition @'
+                  using System;
+                  using System.IO;
+                  using System.Runtime.InteropServices;
+                  using System.ComponentModel;
 
-                  wget \
-                    --output-document=release_file \
-                    --tries=20 \
-                    --waitretry=10 \
-                    --retry-connrefused \
-                    --timeout=60 \
-                    --read-timeout=60 \
-                    --max-redirect=20 \
-                    --progress=bar:force:noscroll \
-                    --show-progress \
-                    "$DOWNLOAD_URL"
+                  public class WinInetDownloader
+                  {
+                      [DllImport("wininet.dll", CharSet = CharSet.Unicode,
+                          SetLastError = true)]
+                      static extern IntPtr InternetOpen(
+                          string agent, int access, string proxy,
+                          string bypass, int flags
+                      );
+
+                      [DllImport("wininet.dll", CharSet = CharSet.Unicode,
+                          SetLastError = true)]
+                      static extern IntPtr InternetOpenUrl(
+                          IntPtr session, string url, string headers,
+                          int headerLength, int flags, IntPtr context
+                      );
+
+                      [DllImport("wininet.dll", SetLastError = true)]
+                      static extern bool InternetReadFile(
+                          IntPtr file, byte[] buffer,
+                          int bytesToRead, out int bytesRead
+                      );
+
+                      [DllImport("wininet.dll", SetLastError = true)]
+                      static extern bool InternetCloseHandle(IntPtr handle);
+
+                      [DllImport("wininet.dll", SetLastError = true)]
+                      static extern bool HttpQueryInfo(
+                          IntPtr request, int infoLevel,
+                          byte[] buffer, ref int bufferLength,
+                          ref int index
+                      );
+
+                      public static void Download(string url, string path)
+                      {
+                          const int INTERNET_OPEN_TYPE_PRECONFIG = 0;
+                          const int INTERNET_FLAG_RELOAD = 0x80000000;
+                          const int INTERNET_FLAG_NO_CACHE_WRITE = 0x04000000;
+                          const int INTERNET_FLAG_KEEP_CONNECTION = 0x00400000;
+                          const int HTTP_QUERY_STATUS_CODE = 19;
+
+                          IntPtr session = InternetOpen(
+                              "Mozilla/5.0 Windows GitHub Actions",
+                              INTERNET_OPEN_TYPE_PRECONFIG,
+                              null, null, 0
+                          );
+
+                          if (session == IntPtr.Zero)
+                              throw new Win32Exception(
+                                  Marshal.GetLastWin32Error()
+                              );
+
+                          IntPtr request = IntPtr.Zero;
+
+                          try
+                          {
+                              request = InternetOpenUrl(
+                                  session, url, null, 0,
+                                  INTERNET_FLAG_RELOAD |
+                                  INTERNET_FLAG_NO_CACHE_WRITE |
+                                  INTERNET_FLAG_KEEP_CONNECTION,
+                                  IntPtr.Zero
+                              );
+
+                              if (request == IntPtr.Zero)
+                                  throw new Win32Exception(
+                                      Marshal.GetLastWin32Error()
+                                  );
+
+                              byte[] status = new byte[64];
+                              int length = status.Length;
+                              int index = 0;
+
+                              if (HttpQueryInfo(
+                                  request,
+                                  HTTP_QUERY_STATUS_CODE,
+                                  status,
+                                  ref length,
+                                  ref index
+                              ))
+                              {
+                                  string code = System.Text.Encoding.ASCII
+                                      .GetString(status, 0, length)
+                                      .Trim('\0', ' ');
+
+                                  Console.WriteLine("HTTP status: " + code);
+
+                                  if (code != "200" && code != "206")
+                                      throw new Exception(
+                                          "HTTP error: " + code
+                                      );
+                              }
+
+                              byte[] buffer = new byte[1024 * 1024];
+                              long total = 0;
+                              var watch = System.Diagnostics.Stopwatch.StartNew();
+
+                              using (FileStream output = new FileStream(
+                                  path, FileMode.Create, FileAccess.Write,
+                                  FileShare.None, buffer.Length,
+                                  FileOptions.SequentialScan))
+                              {
+                                  while (true)
+                                  {
+                                      int read;
+
+                                      if (!InternetReadFile(
+                                          request, buffer,
+                                          buffer.Length, out read
+                                      ))
+                                          throw new Win32Exception(
+                                              Marshal.GetLastWin32Error()
+                                          );
+
+                                      if (read == 0)
+                                          break;
+
+                                      output.Write(buffer, 0, read);
+                                      total += read;
+
+                                      if (watch.Elapsed.TotalSeconds >= 10)
+                                      {
+                                          double speed = total /
+                                              watch.Elapsed.TotalSeconds /
+                                              1048576.0;
+
+                                          Console.WriteLine(
+                                              "Downloaded: {0:F2} GB | Speed: {1:F2} MB/s",
+                                              total / 1073741824.0,
+                                              speed
+                                          );
+                                      }
+                                  }
+                              }
+
+                              Console.WriteLine("Total bytes: " + total);
+                          }
+                          finally
+                          {
+                              if (request != IntPtr.Zero)
+                                  InternetCloseHandle(request);
+
+                              InternetCloseHandle(session);
+                          }
+                      }
+                  }
+                  '@
+
+                  $url = $env:DOWNLOAD_URL
+                  $output = Join-Path $PWD "release_file"
+
+                  Write-Host "Starting WinINet download..."
+
+                  $maxAttempts = 3
+
+                  for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+                      try {
+                          Write-Host "Attempt $attempt of $maxAttempts"
+
+                          [WinInetDownloader]::Download(
+                              $url,
+                              $output
+                          )
+
+                          break
+                      }
+                      catch {
+                          Write-Warning $_
+
+                          Remove-Item $output -Force -ErrorAction SilentlyContinue
+
+                          if ($attempt -eq $maxAttempts) {
+                              throw
+                          }
+
+                          Start-Sleep -Seconds 10
+                      }
+                  }
 
             - name: Verify downloaded file
+              shell: pwsh
               run: |
-                  if [ ! -s release_file ]; then
-                      echo "ERROR: Download failed or empty file"
-                      exit 1
-                  fi
+                  $file = Get-Item release_file
 
-                  echo "Download completed successfully!"
+                  if ($file.Length -le 0) {
+                      throw "Downloaded file is empty"
+                  }
 
-                  echo "File information:"
-                  ls -lh release_file
+                  Write-Host "Download completed!"
+                  Write-Host "Size: $($file.Length) bytes"
 
-                  echo "Exact file size:"
-                  stat -c "%s bytes" release_file
-
-                  echo "SHA256 checksum:"
-                  sha256sum release_file
+                  Get-FileHash release_file -Algorithm SHA256
 
             - name: Upload GitHub Artifact
               uses: actions/upload-artifact@v4
