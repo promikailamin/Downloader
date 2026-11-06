@@ -6,7 +6,6 @@ on:
 
 jobs:
   download:
-    if: ${{ github.event.issue.title == 'sourceforge' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -33,11 +32,3 @@ jobs:
         with:
           name: sourceforge-file
           path: release_file
-
-      - name: Install rclone
-        run: |
-          curl https://rclone.org/install.sh | sudo bash
-
-      - name: Upload Google Drive
-        run: |
-          rclone copy release_file gdrive:GitHub-Uploads/ --progress
