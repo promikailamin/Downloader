@@ -12,8 +12,6 @@ permissions:
 jobs:
     download:
         runs-on: windows-latest
-        timeout-minutes: 360
-
         steps:
             - name: Extract URL from issue body
               id: extract
@@ -87,7 +85,7 @@ jobs:
                       public static void Download(string url, string path)
                       {
                           const int INTERNET_OPEN_TYPE_PRECONFIG = 0;
-                          const int INTERNET_FLAG_RELOAD = 0x80000000;
+                          const int INTERNET_FLAG_RELOAD = unchecked((int)0x80000000);
                           const int INTERNET_FLAG_NO_CACHE_WRITE = 0x04000000;
                           const int INTERNET_FLAG_KEEP_CONNECTION = 0x00400000;
                           const int HTTP_QUERY_STATUS_CODE = 19;
